@@ -1,0 +1,36 @@
+TopEnd      37.0
+Acc         6.757629
+SteerRate   3.0
+SteerMod    0.4
+EngineRate  4.5
+
+MODEL 0 "body.obj"
+MODEL 1 "wheelf.obj"
+MODEL 2 "wheelb.obj"
+MODEL 3 "foglights.obj"
+TPAGE   "car.bmp"
+
+SPINNER {
+ModelNum 3
+}
+
+WHEEL 0 {
+ModelNum   1
+Offset1    -20 -2 36
+IsTurnable true
+SteerRatio -0.4
+}
+WHEEL 1 {
+ModelNum   1
+Offset1    20 -2 36
+IsTurnable true
+SteerRatio -0.4
+}
+WHEEL 2 {
+ModelNum   2
+Offset1    -20 -3 -36
+}
+WHEEL 3 {
+ModelNum   2
+Offset1    20 -3 -36
+}

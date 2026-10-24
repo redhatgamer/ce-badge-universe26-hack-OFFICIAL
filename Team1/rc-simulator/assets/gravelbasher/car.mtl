@@ -1,0 +1,9 @@
+# materials for the car meshes
+
+newmtl tex15
+Kd 1 1 1
+map_Kd car.bmp
+
+newmtl tex15_double
+Kd 1 1 1
+map_Kd car.bmp
