@@ -156,9 +156,24 @@ class Track:
                 hi = mid - 1
         return lo
 
-    def pose_at(self, s, lateral=0.0):
-        """World x, z and heading at distance s, offset sideways (+ right)."""
-        i = self.point_at(s)
+    def point_from(self, i, s):
+        """point_at(s), walking up to 12 points forward from i; falls back
+        to point_at."""
+        s %= self.length
+        n = self.n
+        sv = self.s
+        for _ in range(12):
+            j = i + 1 if i + 1 < n else 0
+            if sv[i] <= s < (sv[j] if j else self.length):
+                return i
+            i = j
+        return self.point_at(s)
+
+    def pose_at(self, s, lateral=0.0, i=-1):
+        """World x, z and heading at distance s, offset sideways (+ right).
+        i: point index at s, if known."""
+        if i < 0:
+            i = self.point_at(s)
         t = (s % self.length) - self.s[i]
         x = self.x[i] + self.dx[i] * t
         z = self.z[i] + self.dz[i] * t
@@ -167,18 +182,39 @@ class Track:
         return x, z, math.atan2(self.dx[i], self.dz[i])
 
     def nearest(self, x, z, i, back=3, fwd=8):
-        """Nearest centreline point to (x, z) searching around index i."""
-        best = i
-        bd = 1e9
+        """Nearest centreline point to (x, z): hill-climb from i, at most fwd
+        ahead or back behind."""
         n = self.n
-        for k in range(i - back, i + fwd + 1):
-            j = k % n
-            ddx = x - self.x[j]
-            ddz = z - self.z[j]
-            d = ddx * ddx + ddz * ddz
-            if d < bd:
+        px = self.x
+        pz = self.z
+        ddx = x - px[i]
+        ddz = z - pz[i]
+        bd = ddx * ddx + ddz * ddz
+        best = i
+        for step, limit in ((1, fwd), (-1, back)):
+            j = best
+            for _ in range(limit):
+                j = (j + step) % n
+                ddx = x - px[j]
+                ddz = z - pz[j]
+                d = ddx * ddx + ddz * ddz
+                if d >= bd:
+                    break
                 bd = d
                 best = j
+            if best != i:
+                break
+        if bd > 4.0:
+            # > 2 m off the centreline: full window scan (the climb can stop
+            # in a local minimum near hairpins)
+            for k in range(i - back, i + fwd + 1):
+                j = k % n
+                ddx = x - px[j]
+                ddz = z - pz[j]
+                d = ddx * ddx + ddz * ddz
+                if d < bd:
+                    bd = d
+                    best = j
         return best, bd
 
     def nearest_global(self, x, z):

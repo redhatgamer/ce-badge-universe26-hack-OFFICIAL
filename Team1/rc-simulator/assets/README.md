@@ -1,8 +1,8 @@
 # Car files
 
-Rotor builds its car from a small set of files. By default they sit loose next
-to `__init__.py` (`CAR_FILES_LOOSE = True`); set it to `False` and point
-`CAR_DIR` at a subfolder such as `assets/gravelbasher/` to keep them apart.
+Rotor builds its car from a small set of files, loose next to `__init__.py`
+or in the `CAR_DIR` subfolder (`assets/gravelbasher/` by default). Both are
+searched; `CAR_FILES_LOOSE = True` tries the loose files first.
 
 | File | Needed | Used for |
 | --- | --- | --- |

@@ -20,35 +20,94 @@ import os
 import random
 import sys
 
-# Find this app's folder: the one holding carmodel.py next to __init__.py.
-# The web simulator runs the editor without __file__ and keeps the previous
-# app's working directory, so the current directory can't be trusted.
-APP_FILE = globals().get("__file__", "")
-APP_DIRS = []
-if "/" in APP_FILE:
-    _d = APP_FILE.rsplit("/", 1)[0] or "/"
-    if not _d.startswith("/"):
-        _d = os.getcwd().rstrip("/") + "/" + _d
-    APP_DIRS.append(_d)
-APP_DIRS += [
-    "/remote/apps/rc-simulator",
-    "/system/apps/rc-simulator",
-    "/apps/rc-simulator",
-    "/rc-simulator",
-    "/",
-    os.getcwd(),
-]
-APP_DIR = APP_DIRS[0]
-for app_dir in APP_DIRS:
-    try:
-        os.stat(app_dir.rstrip("/") + "/carmodel.py")
-        APP_DIR = app_dir
-        break
-    except OSError:
-        pass
+# ---------------------------------------------------------------------------
+# Paths: all file access is by absolute path under APP_DIR. The cwd is only a
+# last-resort fallback; os.getcwd() can raise EIO on the badge's FAT volume.
+# ---------------------------------------------------------------------------
 
-os.chdir(APP_DIR)
+APP_NAME = "rc-simulator"
+APP_ROOTS = ("/remote/apps", "/system/apps", "/apps", "")
+APP_MARKERS = ("carmodel.py", "track.py")   # files that identify the app folder
+
+
+def _cwd():
+    """os.getcwd(), or "" when the filesystem can't answer."""
+    try:
+        return os.getcwd()
+    except OSError:
+        return ""
+
+
+def _join(*parts):
+    """Join path parts into one absolute path: _join("/a/", "b") == "/a/b"."""
+    return "/" + "/".join(p.strip("/") for p in parts if p and p.strip("/"))
+
+
+def _norm(path):
+    """Absolute form of path, without ".", ".." or doubled slashes."""
+    if not path.startswith("/"):
+        path = _cwd() + "/" + path
+    out = []
+    for part in path.split("/"):
+        if part == "..":
+            if out:
+                out.pop()
+        elif part and part != ".":
+            out.append(part)
+    return "/" + "/".join(out)
+
+
+def _is_app_dir(path):
+    for name in APP_MARKERS:
+        try:
+            os.stat(_join(path, name))
+        except OSError:
+            return False
+    return True
+
+
+def _find_app_dir():
+    # __file__'s folder, then the standard install paths
+    candidates = []
+    here = globals().get("__file__", "")
+    if "/" in here:
+        candidates.append(_norm(here.rsplit("/", 1)[0] or "/"))
+    for root in APP_ROOTS:
+        candidates.append(_join(root, APP_NAME))
+    for path in candidates:
+        if _is_app_dir(path):
+            return path
+    # renamed install: any app folder containing APP_MARKERS
+    for root in APP_ROOTS:
+        try:
+            entries = os.listdir(root or "/")
+        except OSError:
+            continue
+        for entry in entries:
+            path = _join(root, entry)
+            if _is_app_dir(path):
+                return path
+    # root (web simulator upload), then the cwd
+    for path in ("/", _cwd()):
+        if path and _is_app_dir(path):
+            return _norm(path)
+    return _join("/system/apps", APP_NAME)
+
+
+APP_DIR = _find_app_dir()
+
+
+def app_path(*parts):
+    """Absolute path to a file in this app's folder."""
+    return _join(APP_DIR, *parts)
+
+
+# carmodel and track import from APP_DIR
 sys.path.insert(0, APP_DIR)
+try:
+    os.chdir(APP_DIR)
+except OSError:
+    pass
 
 import carmodel
 import track as trackmod
@@ -65,9 +124,8 @@ screen.antialias = image.X2
 # Settings
 # ---------------------------------------------------------------------------
 
-# Where the car's files (parameters.txt, *.obj, car.bmp) live.
-#   True:  loose, right next to __init__.py (use this in the web simulator)
-#   False: in the CAR_DIR subfolder, relative to this app's folder
+# Car files (parameters.txt, *.obj, car.bmp): loose in APP_DIR or in CAR_DIR.
+# Both are searched; CAR_FILES_LOOSE = True tries the loose files first.
 CAR_FILES_LOOSE = True
 CAR_DIR = "assets/gravelbasher"
 DEFAULT_CAR_NAME = "Gravel Basher"
@@ -81,27 +139,16 @@ PLAYER_SLOT = 4          # grid slot 0..5 (2 per row); 4 = back row, left
 FADE_MS = 600
 SLIDE_HOLD_MS = (2600, 2200, 3200)
 
-# Rendering quality.
-#   "high": full detail; smooth in the web simulator
-#   "low":  lighter models and a shorter draw distance for the badge itself
-QUALITY = "high"
+# Rendering
+FAR = 18.0               # draw distance, m
+KERBS = True             # red/white kerbs on corners
+SMALL_PART_FACES = 12    # faces kept per small non-wheel part (lights, spoilers)
+SHOW_FPS = False         # frames per second, top right
 
-if QUALITY == "low":
-    FAR = 14.0           # draw distance, m
-    PLAYER_FACES = 160   # your car's faces (None = every face)
-    LOD_NEAR = 0.0       # CPU cars closer than this use the player model, m
-    LOD_MID = 0.0        # ...closer than this use CPU_MID_FACES
-    CPU_MID_FACES = 24
-    CPU_LOW_FACES = 24   # faces kept for CPU cars (plus filler boxes)
-    KERBS = False
-else:
-    FAR = 20.0
-    PLAYER_FACES = None
-    LOD_NEAR = 1.2
-    LOD_MID = 6.0
-    CPU_MID_FACES = 80
-    CPU_LOW_FACES = 24
-    KERBS = True
+# CPU cars at or beyond SPRITE_NEAR are drawn as pre-rendered sprites
+SPRITE_ANGLES = 32       # headings rendered
+SPRITE_NEAR = 1.5        # m; also the distance the sprites are rendered at
+SPRITE_VIEW = 3.5        # m; sprite camera elevation matches this distance
 
 # Buttons: A B C along the bottom, UP/DOWN on the right side.
 # Prefer BUTTON_A/B/C; fall back to the logical names some firmware uses.
@@ -224,6 +271,7 @@ class Car:
         self.name = name
         self.cpu = cpu
         self.tag_pen = tag_pen
+        self.tag_img = tag_image(tag_pen) if cpu else None
         self.top_scale = 1.0
         self.acc_scale = 1.0
 
@@ -380,8 +428,8 @@ def cpu_drive(car, dt):
 
     look = 1.2 + abs(car.vf) * 0.45
     s_t = car.s_local + look
-    i_t = t.point_at(s_t)
-    tx, tz, _ = t.pose_at(s_t, car.lane * t.half[i_t])
+    i_t = t.point_from(car.idx, s_t)
+    tx, tz, _ = t.pose_at(s_t, car.lane * t.half[i_t], i_t)
     dx = tx - car.x
     dz = tz - car.z
     sy = math.sin(car.yaw)
@@ -527,9 +575,11 @@ def fill_ground(xs, zs, pen):
 
 
 def draw_quad(ax, az, bx, bz, cx_, cz_, dx_, dz_, camx, camz, c, s, pen):
-    p = (to_cam(ax, az, camx, camz, c, s), to_cam(bx, bz, camx, camz, c, s),
-         to_cam(cx_, cz_, camx, camz, c, s), to_cam(dx_, dz_, camx, camz, c, s))
-    fill_ground([q[0] for q in p], [q[1] for q in p], pen)
+    ax, az = to_cam(ax, az, camx, camz, c, s)
+    bx, bz = to_cam(bx, bz, camx, camz, c, s)
+    cx_, cz_ = to_cam(cx_, cz_, camx, camz, c, s)
+    dx_, dz_ = to_cam(dx_, dz_, camx, camz, c, s)
+    fill_ground([ax, bx, cx_, dx_], [az, bz, cz_, dz_], pen)
 
 
 def make_marks():
@@ -579,8 +629,38 @@ _KLX = [0.0] * _N
 _KLZ = [0.0] * _N
 _KRX = [0.0] * _N
 _KRZ = [0.0] * _N
+_PL = [None] * _N    # screen-space edge points (None: behind the near plane)
+_PR = [None] * _N
+_PKL = [None] * _N
+_PKR = [None] * _N
+_KERB_PT = [KERBS and (TRACK.curv[i] > 0 or TRACK.curv[i - 1] > 0) for i in range(_N)]
 _STAMP = [-1] * _N
 _frame = [0]
+
+
+def _near_lists():
+    """_NEAR[i]: points within FAR + NEAR_SLACK + 2.5 m of point i
+    (bytes when n <= 256)."""
+    t = TRACK
+    r = FAR + NEAR_SLACK + 2.5   # 2.5: longest segment
+    r2 = r * r
+    out = []
+    for i in range(t.n):
+        xi = t.x[i]
+        zi = t.z[i]
+        near = []
+        for j in range(t.n):
+            dx = t.x[j] - xi
+            dz = t.z[j] - zi
+            if dx * dx + dz * dz <= r2:
+                near.append(j)
+        out.append(bytes(near) if t.n <= 256 else near)
+    return out
+
+
+NEAR_SLACK = 6.0     # m; max camera distance from ref for _NEAR[ref] to apply
+_ALL = list(range(_N))
+_NEAR = []           # set at load by _near_lists()
 
 
 @micropython.native
@@ -591,25 +671,37 @@ def _cam_point(i, camx, camz, c, s, frame):
     t = TRACK
     dx = t.lx[i] - camx
     dz = t.lz[i] - camz
-    _CLX[i] = dx * c - dz * s
-    _CLZ[i] = dx * s + dz * c
+    x = dx * c - dz * s
+    z = dx * s + dz * c
+    _CLX[i] = x
+    _CLZ[i] = z
+    _PL[i] = vec2(CX + FOCAL * x / z, HY + GROUND_K / z) if z >= Z_NEAR else None
     dx = t.rx[i] - camx
     dz = t.rz[i] - camz
-    _CRX[i] = dx * c - dz * s
-    _CRZ[i] = dx * s + dz * c
-    if t.curv[i] > 0 or t.curv[i - 1] > 0:
+    x = dx * c - dz * s
+    z = dx * s + dz * c
+    _CRX[i] = x
+    _CRZ[i] = z
+    _PR[i] = vec2(CX + FOCAL * x / z, HY + GROUND_K / z) if z >= Z_NEAR else None
+    if _KERB_PT[i]:
         dx = t.klx[i] - camx
         dz = t.klz[i] - camz
-        _KLX[i] = dx * c - dz * s
-        _KLZ[i] = dx * s + dz * c
+        x = dx * c - dz * s
+        z = dx * s + dz * c
+        _KLX[i] = x
+        _KLZ[i] = z
+        _PKL[i] = vec2(CX + FOCAL * x / z, HY + GROUND_K / z) if z >= Z_NEAR else None
         dx = t.krx[i] - camx
         dz = t.krz[i] - camz
-        _KRX[i] = dx * c - dz * s
-        _KRZ[i] = dx * s + dz * c
+        x = dx * c - dz * s
+        z = dx * s + dz * c
+        _KRX[i] = x
+        _KRZ[i] = z
+        _PKR[i] = vec2(CX + FOCAL * x / z, HY + GROUND_K / z) if z >= Z_NEAR else None
 
 
 @micropython.native
-def draw_ground(camx, camz, c, s):
+def draw_ground(camx, camz, c, s, ref):
     screen.pen = SKY
     screen.rectangle(0, 0, SW, HY)
     screen.pen = SKY_LOW
@@ -623,7 +715,13 @@ def draw_ground(camx, camz, c, s):
     n = t.n
     _frame[0] += 1
     frame = _frame[0]
-    for i in range(n):
+    # ref: the player's track point
+    dx = t.x[ref] - camx
+    dz = t.z[ref] - camz
+    near = _NEAR[ref] if _NEAR and dx * dx + dz * dz < NEAR_SLACK * NEAR_SLACK else _ALL
+    tri = screen.triangle
+    curv = t.curv
+    for i in near:
         dx = t.x[i] - camx
         dz = t.z[i] - camz
         if dx * dx + dz * dz > FAR2:
@@ -633,12 +731,35 @@ def draw_ground(camx, camz, c, s):
         j = i + 1 if i + 1 < n else 0
         _cam_point(i, camx, camz, c, s, frame)
         _cam_point(j, camx, camz, c, s, frame)
-        fill_ground([_CLX[i], _CRX[i], _CRX[j], _CLX[j]], [_CLZ[i], _CRZ[i], _CRZ[j], _CLZ[j]],
-                    ASPHALT_A if i & 1 else ASPHALT_B)
-        if KERBS and t.curv[i] > 0:
+        a = _PL[i]
+        b = _PR[i]
+        bb = _PR[j]
+        aa = _PL[j]
+        pen = ASPHALT_A if i & 1 else ASPHALT_B
+        if a is not None and b is not None and bb is not None and aa is not None:
+            screen.pen = pen     # past the near plane: no clipping
+            tri(a, b, bb)
+            tri(a, bb, aa)
+        else:
+            fill_ground([_CLX[i], _CRX[i], _CRX[j], _CLX[j]], [_CLZ[i], _CRZ[i], _CRZ[j], _CLZ[j]], pen)
+        if KERBS and curv[i] > 0:
             pen = KERB_RED if i & 1 else KERB_WHITE
-            fill_ground([_CLX[i], _KLX[i], _KLX[j], _CLX[j]], [_CLZ[i], _KLZ[i], _KLZ[j], _CLZ[j]], pen)
-            fill_ground([_CRX[i], _KRX[i], _KRX[j], _CRX[j]], [_CRZ[i], _KRZ[i], _KRZ[j], _CRZ[j]], pen)
+            k = _PKL[i]
+            kk = _PKL[j]
+            if a is not None and k is not None and kk is not None and aa is not None:
+                screen.pen = pen
+                tri(a, k, kk)
+                tri(a, kk, aa)
+            else:
+                fill_ground([_CLX[i], _KLX[i], _KLX[j], _CLX[j]], [_CLZ[i], _KLZ[i], _KLZ[j], _CLZ[j]], pen)
+            k = _PKR[i]
+            kk = _PKR[j]
+            if b is not None and k is not None and kk is not None and bb is not None:
+                screen.pen = pen
+                tri(b, k, kk)
+                tri(b, kk, bb)
+            else:
+                fill_ground([_CRX[i], _KRX[i], _KRX[j], _CRX[j]], [_CRZ[i], _KRZ[i], _KRZ[j], _CRZ[j]], pen)
 
     for q in MARKS:
         dx = q[9] - camx
@@ -711,90 +832,157 @@ def _pen(pens, rgb):
     return pen
 
 
-def _filler(part, pens, shrink=0.86):
-    """A solid box inside a part, in the part's average colour. Reduced
-    meshes draw it first so gaps show car colour rather than the track."""
-    v = part["verts"]
-    if not v or not part["faces"]:
-        return None
+TWO_PI = 2 * math.pi
+ORDER_ANGLES = 32    # headings with a precomputed face draw order
+
+
+def _finish_mesh(raw_parts):
+    """Runtime mesh (parts, orders, stamps) from (pivot, steer, verts, faces).
+
+    Face: (a, b, c, d, nx, ny, nz, pen, double, w, pts, id); visible when
+    n . cam > w. orders[b]: faces far to near for heading b. Depth uses
+    camera-space z only (no pitch), so the order is distance-independent."""
+    parts = []
+    centres = []
+    gid = 0
+    for (px, py, pz), steer, verts, raw in raw_parts:
+        n = len(verts)
+        pts = [None] * n
+        faces = []
+        for a, b, c, d, nx, ny, nz, pen, double in raw:
+            va = verts[a]
+            f = (a, b, c, d, nx, ny, nz, pen, double,
+                 nx * va[0] + ny * va[1] + nz * va[2], pts, gid)
+            gid += 1
+            faces.append(f)
+            idx = (a, b, c) if d < 0 else (a, b, c, d)
+            cx = sum(verts[i][0] for i in idx) / len(idx)
+            cz = sum(verts[i][2] for i in idx) / len(idx)
+            centres.append((f, px + cx, pz + cz))
+        parts.append((px, py, pz, steer, verts, faces, pts, [0] * n))
+    orders = []
+    for b in range(ORDER_ANGLES):
+        r = TWO_PI * b / ORDER_ANGLES
+        cr = math.cos(r)
+        sr = math.sin(r)
+        keyed = []
+        for f, x, z in centres:
+            keyed.append((z * cr - x * sr, f[11], f))   # camera-space z
+        keyed.sort(reverse=True)
+        orders.append([e[2] for e in keyed])
+    return (parts, orders, [0] * gid)
+
+
+def _bounds(v):
     lo = [min(v[i] for i in range(k, len(v), 3)) for k in range(3)]
     hi = [max(v[i] for i in range(k, len(v), 3)) for k in range(3)]
-    tot = 0.0
-    r = g = b = 0.0
+    return lo, hi
+
+
+def _is_wheel(pi, part):
+    """Bounding box with two near-equal sides and one thinner (axle) side."""
+    if pi == 0 or not part["verts"]:
+        return False
+    lo, hi = _bounds(part["verts"])
+    d = sorted(hi[k] - lo[k] for k in range(3))
+    return d[2] > 0 and d[1] > 0.8 * d[2] and d[0] < 0.85 * d[2]
+
+
+def _wheel_proxy(part, pens, sides=6):
+    """Wheel as a prism with `sides` sides, coloured from the area-weighted
+    tread and side faces."""
+    v = part["verts"]
+    lo, hi = _bounds(v)
+    dims = [hi[k] - lo[k] for k in range(3)]
+    ax = dims.index(min(dims))                    # axle axis
+    u, w = [k for k in range(3) if k != ax]
+    c = [(lo[k] + hi[k]) / 2 for k in range(3)]
+    rad = (dims[u] + dims[w]) / 4
+    hw = dims[ax] / 2
+    sums = ([0.0] * 4, [0.0] * 4)                 # tread, side: r, g, b, area
     for f in part["faces"]:
+        acc = sums[1 if abs(f[1 + ax]) >= 0.5 else 0]
         area = _face_area(v, f[0])
         rgb = f[4]
-        r += ((rgb >> 16) & 255) * area
-        g += ((rgb >> 8) & 255) * area
-        b += (rgb & 255) * area
-        tot += area
-    if tot <= 0:
-        return None
-    base = (int(r / tot) << 16) | (int(g / tot) << 8) | int(b / tot)
-    c = [(lo[k] + hi[k]) / 2 for k in range(3)]
-    h = [(hi[k] - lo[k]) / 2 * shrink for k in range(3)]
+        acc[0] += ((rgb >> 16) & 255) * area
+        acc[1] += ((rgb >> 8) & 255) * area
+        acc[2] += (rgb & 255) * area
+        acc[3] += area
+    rgbs = []
+    for acc in sums:
+        if acc[3] > 0:
+            rgbs.append((int(acc[0] / acc[3]) << 16) | (int(acc[1] / acc[3]) << 8) | int(acc[2] / acc[3]))
+        else:
+            rgbs.append(rgbs[0] if rgbs else 0x28282E)
+    t_rgb, s_rgb = rgbs
+    s_rgb = ((((t_rgb >> 16) & 255) + ((s_rgb >> 16) & 255)) // 2 << 16
+             | (((t_rgb >> 8) & 255) + ((s_rgb >> 8) & 255)) // 2 << 8
+             | ((t_rgb & 255) + (s_rgb & 255)) // 2)     # side = mean(tread, side)
+    tread = _pen(pens, t_rgb)
+    side_pen = _pen(pens, s_rgb)
     verts = []
-    for i in range(8):
-        verts.append((c[0] + (h[0] if i & 1 else -h[0]),
-                      c[1] + (h[1] if i & 2 else -h[1]),
-                      c[2] + (h[2] if i & 4 else -h[2])))
+    for sgn in (-1, 1):
+        for k in range(sides):
+            t = TWO_PI * (k + 0.5) / sides
+            q = [0.0, 0.0, 0.0]
+            q[ax] = c[ax] + sgn * hw
+            q[u] = c[u] + rad * math.cos(t)
+            q[w] = c[w] + rad * math.sin(t)
+            verts.append((q[0], q[1], q[2]))
     faces = []
-    for idx, nx, ny, nz in BOX_FACES:
-        k = 1.3 if ny > 0 else (1.05 if nx else 0.9)   # lift the averaged colour
-        rgb = ((min(255, int(((base >> 16) & 255) * k)) << 16)
-               | (min(255, int(((base >> 8) & 255) * k)) << 8)
-               | min(255, int((base & 255) * k)))
-        faces.append((idx[0], idx[1], idx[2], idx[3], nx, ny, nz, _pen(pens, rgb), False))
-    n = 8
-    px, py, pz = part["pivot"]
-    return (px, py, pz, part["steer"], verts, faces,
-            [0.0] * n, [0.0] * n, [0.0] * n, [None] * n, True)
+    for k in range(sides):
+        k1 = (k + 1) % sides
+        t = TWO_PI * (k + 1) / sides
+        n = [0.0, 0.0, 0.0]
+        n[u] = math.cos(t)
+        n[w] = math.sin(t)
+        faces.append((k, k1, sides + k1, sides + k, n[0], n[1], n[2], tread, False))
+    for sgn, off in ((-1, 0), (1, sides)):
+        n = [0.0, 0.0, 0.0]
+        n[ax] = float(sgn)
+        for k in range(1, sides - 1, 2):           # cap as a quad fan
+            d = off + k + 2 if k + 2 < sides else -1
+            faces.append((off, off + k, off + k + 1, d, n[0], n[1], n[2], side_pen, False))
+    return (part["pivot"], part["steer"], verts, faces)
 
 
-def build_mesh(model, budget, pens):
-    """Runtime mesh keeping the `budget` largest faces (None = all). Reduced
-    meshes get filler boxes so the missing faces don't leave holes."""
-    faces_all = []
+def _part_faces(part, chosen, pens):
+    """Raw part with only the chosen (area, part index, face) entries."""
+    v = part["verts"]
+    remap = {}
+    verts = []
+    faces = []
+    for _, _, (idx, nx, ny, nz, rgb, double) in chosen:
+        new = []
+        for i in idx:
+            if i not in remap:
+                remap[i] = len(verts)
+                verts.append((v[3 * i], v[3 * i + 1], v[3 * i + 2]))
+            new.append(remap[i])
+        d = new[3] if len(new) > 3 else -1
+        faces.append((new[0], new[1], new[2], d, nx, ny, nz, _pen(pens, rgb), bool(double)))
+    return (part["pivot"], part["steer"], verts, faces)
+
+
+def build_mesh(model, pens):
+    """Runtime mesh: body (part 0) with every face, wheels as prisms, other
+    parts cut to their SMALL_PART_FACES largest faces."""
+    raw = []
     for pi, part in enumerate(model["parts"]):
-        for f in part["faces"]:
-            faces_all.append((_face_area(part["verts"], f[0]), pi, f))
-    mesh = []
-    if budget is not None:
-        if len(faces_all) > budget:
-            faces_all.sort(key=lambda e: e[0], reverse=True)
-            faces_all = faces_all[:budget]
-        for part in model["parts"]:
-            box = _filler(part, pens)
-            if box is not None:
-                mesh.append(box)
-    for pi, part in enumerate(model["parts"]):
-        v = part["verts"]
-        remap = {}
-        verts = []
-        faces = []
-        for _, fpi, (idx, nx, ny, nz, rgb, double) in faces_all:
-            if fpi != pi:
-                continue
-            new = []
-            for i in idx:
-                if i not in remap:
-                    remap[i] = len(verts)
-                    verts.append((v[3 * i], v[3 * i + 1], v[3 * i + 2]))
-                new.append(remap[i])
-            d = new[3] if len(new) > 3 else -1
-            faces.append((new[0], new[1], new[2], d, nx, ny, nz, _pen(pens, rgb), bool(double)))
-        if not faces:
+        if pi == 0:
+            chosen = [(0.0, 0, f) for f in part["faces"]]
+        elif _is_wheel(pi, part):
+            raw.append(_wheel_proxy(part, pens))
             continue
-        n = len(verts)
-        px, py, pz = part["pivot"]
-        mesh.append((px, py, pz, part["steer"], verts, faces,
-                     [0.0] * n, [0.0] * n, [0.0] * n, [None] * n, False))
-    return mesh
+        else:
+            chosen = [(_face_area(part["verts"], f[0]), pi, f) for f in part["faces"]]
+            chosen.sort(key=lambda e: e[0], reverse=True)
+            chosen = chosen[:SMALL_PART_FACES]
+        raw.append(_part_faces(part, chosen, pens))
+    return _finish_mesh([m for m in raw if m[3]])
 
 
-MESH_FULL = []
-MESH_MID = []
-MESH_LOW = []
+MESH = None          # set by use_model()
 SHADOW_BOX = (-0.21, 0.21, -0.27, 0.27)
 CAR_NAME = DEFAULT_CAR_NAME.upper()
 status = ""
@@ -802,39 +990,35 @@ status_until = 0
 
 
 def use_model(model):
-    global MESH_FULL, MESH_MID, MESH_LOW, SHADOW_BOX, CAR_NAME
-    pens = {}
-    MESH_FULL = build_mesh(model, PLAYER_FACES, pens)
-    MESH_MID = build_mesh(model, CPU_MID_FACES, pens)
-    MESH_LOW = build_mesh(model, CPU_LOW_FACES, pens)
+    global MESH, SHADOW_BOX, CAR_NAME
+    MESH = build_mesh(model, {})
+    build_sprites(MESH)
     sx0, sx1, sz0, sz1 = model["shadow"]
     SHADOW_BOX = (sx0 - 0.02, sx1 + 0.02, sz0 - 0.02, sz1 + 0.02)
     CAR_NAME = str(model.get("name", DEFAULT_CAR_NAME)).upper()
     apply_tune(model.get("tune", {}))
 
 
-def _dir_of(path):
-    d = path.rsplit("/", 1)[0] if "/" in path else ""
-    while "//" in d:
-        d = d.replace("//", "/")
-    return d or "/"
-
-
 def find_car_folder():
-    # Look next to carmodel.py first (it is uploaded with the car files),
-    # then this app's folder, the cwd and the root.
+    # carmodel.py's folder, APP_DIR, root; in each, loose files and CAR_DIR
     bases = []
-    for base in (_dir_of(getattr(carmodel, "__file__", "")), APP_DIR, os.getcwd(), "/"):
-        if base and base not in bases:
-            bases.append(base)
-    sub = "" if CAR_FILES_LOOSE else CAR_DIR.strip("/").lstrip("./")
+    mod = getattr(carmodel, "__file__", "")
+    if "/" in mod:
+        bases.append(_norm(mod.rsplit("/", 1)[0] or "/"))
+    bases += [APP_DIR, "/"]
+    sub = CAR_DIR.strip("/")
+    if sub.startswith("./"):
+        sub = sub[2:]
+    subs = ("", sub) if CAR_FILES_LOOSE else (sub, "")
     tried = []
     for base in bases:
-        folder = base.rstrip("/") + "/" + sub if sub else base
-        folder = folder.rstrip("/") or "/"
-        tried.append(folder)
-        if carmodel.find_file(folder, "parameters.txt"):
-            return folder, tried
+        for s in subs:
+            folder = _join(base, s)
+            if folder in tried:
+                continue
+            tried.append(folder)
+            if carmodel.find_file(folder, "parameters.txt"):
+                return folder, tried
     return None, tried
 
 
@@ -871,15 +1055,19 @@ def draw_shadow(px, pz, cr, sr):
     fill_ground(xs, zs, SHADOW)
 
 
+_mesh_frame = [0]
+
+
 @micropython.native
-def draw_mesh(mesh, wheel, px, pz, r):
-    """Transform, back-face cull, depth sort and draw one car."""
+def draw_mesh(mesh, wheel, px, pz, r, dst, ox, oy, cam_h):
+    """Draw a car at camera-space (px, pz), yaw r, onto dst. (ox, oy): horizon
+    centre on dst; cam_h: camera height."""
+    parts, orders, fst = mesh
     cr = math.cos(r)
     sr = math.sin(r)
-    keys = []
-    vis = []
-    n = 0
-    for pvx, pvy, pvz, steer, verts, faces, xs, ys, zs, pts, filler in mesh:
+    _mesh_frame[0] += 1
+    fr = _mesh_frame[0]
+    for pvx, pvy, pvz, steer, verts, faces, pts, st in parts:
         if steer:
             a = r + wheel * steer
             ca = math.cos(a)
@@ -889,56 +1077,126 @@ def draw_mesh(mesh, wheel, px, pz, r):
             sa = sr
         bx = px + pvx * cr + pvz * sr
         bz = pz - pvx * sr + pvz * cr
-        by = pvy - CAM_H
+        by = pvy - cam_h
 
+        # camera in part space; back-face test is n . cam > w
+        lx = bz * sa - bx * ca
+        ly = -by
+        lz = -bx * sa - bz * ca
+        shown = False
+        for f in faces:
+            if f[8] or f[4] * lx + f[5] * ly + f[6] * lz > f[9]:
+                fst[f[11]] = fr
+                st[f[0]] = fr
+                st[f[1]] = fr
+                st[f[2]] = fr
+                if f[3] >= 0:
+                    st[f[3]] = fr
+                shown = True
+        if not shown:
+            continue
+
+        # project vertices of visible faces only
         i = 0
         for x, y, z in verts:
-            X = bx + x * ca + z * sa
-            Z = bz - x * sa + z * ca
-            Y = by + y
-            if Z < 0.05:
-                Z = 0.05
-            xs[i] = X
-            ys[i] = Y
-            zs[i] = Z
-            k = FOCAL / Z
-            pts[i] = vec2(CX + X * k, HY - Y * k)
+            if st[i] == fr:
+                Z = bz - x * sa + z * ca
+                if Z < 0.05:
+                    Z = 0.05
+                k = FOCAL / Z
+                pts[i] = vec2(ox + (bx + x * ca + z * sa) * k, oy - (by + y) * k)
             i += 1
 
-        for f in faces:
-            fa = f[0]
-            if not f[8]:
-                nx = f[4]
-                nz = f[6]
-                if (nx * ca + nz * sa) * xs[fa] + f[5] * ys[fa] + (nz * ca - nx * sa) * zs[fa] >= 0:
-                    continue
-            fd = f[3]
-            if fd >= 0:
-                depth = (zs[fa] + zs[f[1]] + zs[f[2]] + zs[fd]) * 0.25
-            else:
-                depth = (zs[fa] + zs[f[1]] + zs[f[2]]) * 0.3333
-            if filler:
-                depth += 100.0     # behind everything else in this car
-            keys.append(int(depth * 4096) * 1024 + n)
-            vis.append(f)
-            vis.append(pts)
-            n += 1
-            if n >= 1024:
-                break
-
-    keys.sort()
-    i = len(keys) - 1
-    while i >= 0:
-        k = (keys[i] & 1023) * 2
-        f = vis[k]
-        pts = vis[k + 1]
-        screen.pen = f[7]
+    # draw order for the car's yaw relative to the view ray
+    n = len(orders)
+    a = (r - math.atan2(px, pz)) % TWO_PI
+    order = orders[int(a * n / TWO_PI + 0.5) % n]
+    tri = dst.triangle
+    last = None
+    for f in order:
+        if fst[f[11]] != fr:
+            continue
+        pen = f[7]
+        if pen is not last:
+            dst.pen = pen
+            last = pen
+        pts = f[10]
         p0 = pts[f[0]]
         p2 = pts[f[2]]
-        screen.triangle(p0, pts[f[1]], p2)
+        tri(p0, pts[f[1]], p2)
         if f[3] >= 0:
-            screen.triangle(p0, p2, pts[f[3]])
-        i -= 1
+            tri(p0, p2, pts[f[3]])
+
+
+# ---------------------------------------------------------------------------
+# CPU car sprites
+# ---------------------------------------------------------------------------
+
+SPRITES = []         # one image per heading, all the same size
+SPRITE_AX = 0.0      # car origin's ground point in sprite pixels
+SPRITE_AY = 0.0
+
+
+def build_sprites(mesh):
+    """Render mesh at SPRITE_ANGLES headings into same-size images."""
+    global SPRITES, SPRITE_AX, SPRITE_AY
+    SPRITES = []
+    if not mesh[0] or SPRITE_ANGLES < 1:
+        return
+    z_ref = SPRITE_NEAR
+    cam_h = CAM_H * SPRITE_NEAR / SPRITE_VIEW   # elevation angle as seen from SPRITE_VIEW
+    k_ref = FOCAL / z_ref
+    # shared size and anchor: project each part's bbox corners at every heading
+    boxes = []
+    for pvx, pvy, pvz, steer, verts, faces, pts, st in mesh[0]:
+        lo = [min(v[k] for v in verts) for k in range(3)]
+        hi = [max(v[k] for v in verts) for k in range(3)]
+        boxes.append((pvx, pvy, pvz, [(hi[0] if i & 1 else lo[0], hi[1] if i & 2 else lo[1],
+                                        hi[2] if i & 4 else lo[2]) for i in range(8)]))
+    x0 = y0 = 1e9
+    x1 = y1 = -1e9
+    for b in range(SPRITE_ANGLES):
+        r = TWO_PI * b / SPRITE_ANGLES
+        cr = math.cos(r)
+        sr = math.sin(r)
+        for pvx, pvy, pvz, corners in boxes:
+            bx = pvx * cr + pvz * sr
+            bz = z_ref - pvx * sr + pvz * cr
+            by = pvy - cam_h
+            for x, y, z in corners:
+                k = FOCAL / max(0.05, bz - x * sr + z * cr)
+                sx = (bx + x * cr + z * sr) * k
+                sy = -(by + y) * k
+                x0 = min(x0, sx)
+                x1 = max(x1, sx)
+                y0 = min(y0, sy)
+                y1 = max(y1, sy)
+    ox = math.ceil(-x0) + 1
+    oy = math.ceil(-y0) + 1
+    w = int(math.ceil(x1 - x0)) + 3
+    h = int(math.ceil(y1 - y0)) + 3
+    for b in range(SPRITE_ANGLES):
+        img = image(w, h)
+        try:
+            img.antialias = image.X2
+        except (AttributeError, TypeError):
+            pass
+        draw_mesh(mesh, 0.0, 0.0, z_ref, TWO_PI * b / SPRITE_ANGLES, img, ox, oy, cam_h)
+        SPRITES.append(img)
+    SPRITE_AX = ox
+    SPRITE_AY = oy + cam_h * k_ref
+    gc.collect()
+
+
+def draw_sprite(X, Z, r):
+    """Blit the sprite for yaw r relative to the view ray, scaled for Z,
+    anchored at the car's ground point."""
+    a = (r - math.atan2(X, Z)) % TWO_PI
+    img = SPRITES[int(a * (SPRITE_ANGLES / TWO_PI) + 0.5) % SPRITE_ANGLES]
+    sc = SPRITE_NEAR / Z
+    k = FOCAL / Z
+    screen.blit(img, rect(CX + X * k - SPRITE_AX * sc, HY + CAM_H * k - SPRITE_AY * sc,
+                          img.width * sc, img.height * sc))
 
 
 # ---------------------------------------------------------------------------
@@ -947,7 +1205,7 @@ def draw_mesh(mesh, wheel, px, pz, r):
 
 def load_png(name):
     try:
-        return image.load(name)
+        return image.load(app_path(name))
     except Exception:  # missing art is fine: banners fall back to text
         return None
 
@@ -1060,6 +1318,21 @@ COUNT_IMAGES = (
     text_image("3", font.ziplock, color.rgb(255, 110, 100)),
 )
 TAG_IMAGE = text_image("CPU", font.sins, WHITE, None, 1)
+
+
+def tag_image(pen):
+    """CPU tag: label on a rounded rect in pen."""
+    w = TAG_IMAGE.width
+    h = TAG_IMAGE.height
+    img = image(w + 4, h + 1)
+    try:
+        img.antialias = image.X2
+    except (AttributeError, TypeError):
+        pass
+    img.pen = pen
+    img.shape(shape.rounded_rectangle(0, 0, w + 4, h + 1, 3))
+    img.blit(TAG_IMAGE, vec2(2, 1))
+    return img
 
 
 def make_minimap(size=34):
@@ -1243,7 +1516,8 @@ def step_race(dt):
 def draw_world(camx, camz, cyaw):
     c = math.cos(cyaw)
     s = math.sin(cyaw)
-    draw_ground(camx, camz, c, s)
+    screen.antialias = image.OFF
+    draw_ground(camx, camz, c, s, player.idx)
 
     items = []
     for car in cars:
@@ -1264,26 +1538,24 @@ def draw_world(camx, camz, cyaw):
             draw_sign(obj, X, Z)
             continue
         car = obj
-        if car is player or Z < LOD_NEAR:
-            mesh = MESH_FULL
-        elif Z < LOD_MID:
-            mesh = MESH_MID
+        r = car.yaw - cyaw
+        screen.antialias = image.OFF
+        draw_shadow(X, Z, math.cos(r), math.sin(r))
+        if car.cpu and SPRITES and Z >= SPRITE_NEAR:
+            draw_sprite(X, Z, r)
         else:
-            mesh = MESH_LOW
-        draw_shadow(X, Z, math.cos(car.yaw - cyaw), math.sin(car.yaw - cyaw))
-        draw_mesh(mesh, car.wheel, X, Z, car.yaw - cyaw)
+            screen.antialias = image.X2
+            draw_mesh(MESH, car.wheel, X, Z, r, screen, CX, HY, CAM_H)
         if car.cpu and Z < 9.0:
             tags.append((car, X, Z))
 
+    screen.antialias = image.X2
     for car, X, Z in tags:
         k = FOCAL / Z
-        tx = CX + X * k
-        ty = HY - (0.30 - CAM_H) * k
-        w = TAG_IMAGE.width
-        h = TAG_IMAGE.height
-        screen.pen = car.tag_pen
-        screen.shape(shape.rounded_rectangle(tx - w / 2 - 2, ty - h - 1, w + 4, h + 1, 3))
-        screen.blit(TAG_IMAGE, vec2(tx - w / 2, ty - h))
+        img = car.tag_img
+        if img is None:
+            continue
+        screen.blit(img, vec2(CX + X * k - img.width / 2, HY - (0.30 - CAM_H) * k - img.height))
 
 
 def centred(text, y, pen, fnt=None, x0=0, width=None):
@@ -1418,6 +1690,19 @@ def draw_loading():
     centred("Loading...", SH / 2 - 6, HUD_DIM)
 
 
+_fps = [0.0]
+
+
+def draw_fps(dt_ms):
+    if dt_ms > 0:
+        _fps[0] += (1000.0 / dt_ms - _fps[0]) * 0.1    # EMA, ~10 frames
+    screen.font = font.sins
+    screen.pen = HUD
+    t = "%d FPS" % int(_fps[0] + 0.5)
+    w, _ = screen.measure_text(t)
+    screen.text(t, SW - w - 3, 14)
+
+
 def fade(alpha):
     """Darken the whole screen; 255 is fully black."""
     if alpha <= 0:
@@ -1498,7 +1783,7 @@ def draw_start(ms_now):
 # ---------------------------------------------------------------------------
 
 def update():
-    global phase, phase_t, cam_yaw, orbit, MARKS, SIGNS_PLACED, MINIMAP, MINIMAP_MAP
+    global phase, phase_t, cam_yaw, orbit, MARKS, SIGNS_PLACED, MINIMAP, MINIMAP_MAP, _NEAR
 
     if phase == "load":
         draw_loading()
@@ -1510,6 +1795,7 @@ def update():
         load_car()
         gc.collect()
         MARKS = make_marks()
+        _NEAR = _near_lists()
         SIGNS_PLACED = place_signs()
         MINIMAP, MINIMAP_MAP = make_minimap()
         load_best()
@@ -1519,7 +1805,8 @@ def update():
         return
 
     now = badge.ticks
-    dt = badge.ticks_delta / 1000
+    dt_ms = badge.ticks_delta
+    dt = dt_ms / 1000
     if dt > 0.05:
         dt = 0.05
 
@@ -1533,6 +1820,8 @@ def update():
 
     if phase == "intro":
         if draw_intro(now):
+            if SHOW_FPS:
+                draw_fps(dt_ms)
             return
         go_to_start()
         now = badge.ticks
@@ -1567,6 +1856,8 @@ def update():
         draw_hud(now)
         if phase == "countdown" or (phase == "race" and now - phase_t < GO_MS):
             draw_countdown(now)
+    if SHOW_FPS:
+        draw_fps(dt_ms)
 
 
 run(update)
