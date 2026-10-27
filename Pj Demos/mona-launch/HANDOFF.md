@@ -22,6 +22,14 @@ The app needs:
 
 The empty `assets/` directory from the source app was not copied.
 
+The app first uses the executing file's directory when available, otherwise
+the launcher's current working directory (including `/` for web-editor runs).
+If that directory is unavailable, it checks `/remote/apps/mona-launch`,
+`/system/apps/mona-launch`, `/apps/mona-launch`, `/mona-launch`, and `/` in
+that order. This avoids selecting another installed app with the same name.
+It uses `os.stat()` instead of `os.path`, which is not available on the tested
+Tufty MicroPython build.
+
 ## Physical test record
 
 The connected device reported:
@@ -81,6 +89,11 @@ The first draw attempt then failed with `TypeError: missing required
 positional arguments` at a `shape.line(...)` call. The badge accepted
 `shape.line(0, 0, 10, 10, 1)`. Adding a width to every line call fixed the
 screen drawing error.
+
+The transferred app later failed at startup because it used
+`os.path.dirname(__file__)`. The tested Tufty MicroPython build has `os` but
+does not provide desktop Python's `os.path`. The app now finds its directory
+with `os.stat()` and loads `mona.png` relative to that directory.
 
 After the title screen worked, pressing A could carry from the title into
 launch. The READY state now waits for the start button to be released and

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Safely copy one badge app to a mounted BADGER volume."""
+"""Safely copy one badge app to a mounted badge volume."""
 
 from __future__ import annotations
 
@@ -47,18 +47,26 @@ def windows_volume_label(path: Path) -> str | None:
         return None
 
 
+def mount_display_name(path: Path) -> str:
+    return windows_volume_label(path) or path.name or str(path)
+
+
 def candidate_mounts() -> list[Path]:
     user = getpass.getuser()
     candidates = [
         Path("/Volumes/BADGER"),
+        Path("/Volumes/TUFTY"),
         Path("/media") / user / "BADGER",
+        Path("/media") / user / "TUFTY",
         Path("/run/media") / user / "BADGER",
+        Path("/run/media") / user / "TUFTY",
         Path("/mnt/BADGER"),
+        Path("/mnt/TUFTY"),
     ]
     if os.name == "nt":
         for letter in string.ascii_uppercase[3:]:
             root = Path(f"{letter}:\\")
-            if root.exists() and windows_volume_label(root) == "BADGER":
+            if root.exists() and windows_volume_label(root) in {"BADGER", "TUFTY"}:
                 candidates.append(root)
     return candidates
 
@@ -73,8 +81,8 @@ def find_mount(explicit: Path | None) -> Path:
     found = [path.resolve() for path in candidate_mounts() if path.is_dir()]
     if not found:
         raise FileNotFoundError(
-            "No mounted BADGER volume found. Put the badge in USB Disk Mode or "
-            "pass --mount /path/to/BADGER."
+            "No mounted BADGER or TUFTY volume found. Put the badge in USB Disk "
+            "Mode or pass --mount /path/to/volume."
         )
     if len(found) > 1:
         joined = ", ".join(str(path) for path in found)
@@ -131,12 +139,12 @@ def deploy(
         rendered = "\n".join(issue.render(repo_root) for issue in errors)
         raise RuntimeError(f"Hardware validation failed:\n{rendered}")
 
-    system_dir = mount / "system"
-    apps_dir = system_dir / "apps"
-    if not system_dir.is_dir() or not apps_dir.is_dir():
+    app_roots = (mount / "system" / "apps", mount / "apps")
+    apps_dir = next((path for path in app_roots if path.is_dir()), None)
+    if apps_dir is None:
         raise FileNotFoundError(
-            f"{mount} does not contain system/apps; verify this is the BADGER "
-            "USB Disk Mode volume."
+            f"{mount} does not contain system/apps or apps; verify this is the "
+            "badge USB Disk Mode volume."
         )
 
     destination = apps_dir / app_dir.name
@@ -186,7 +194,10 @@ def deploy(
         if staging_root.exists() and not any(staging_root.iterdir()):
             staging_root.rmdir()
 
-    print("Deployment complete. Eject BADGER safely, then press RESET once.")
+    print(
+        f"Deployment complete. Eject {mount_display_name(mount)} safely, "
+        "then press RESET once."
+    )
     return destination
 
 

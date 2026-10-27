@@ -1,7 +1,7 @@
 ---
 name: badge-app-builder
 description: Build, debug, validate, emulate, and deploy MicroPython apps for the GitHub Hackable Conference Badge. Use when someone has an app idea, edits TeamN apps or badge/apps examples, asks about Badgeware, runs the badge simulator, or wants to test on a physical BADGER device.
-compatibility: Requires Python 3.10+ for bundled tools (standard library only). Emulator use requires a browser and no local install. Physical deployment requires a mounted BADGER USB volume. Advanced API verification may require GitHub access.
+compatibility: Requires Python 3.10+ for bundled tools (standard library only). Emulator use requires a browser and no local install. Physical deployment requires a mounted BADGER or TUFTY USB volume. Advanced API verification may require GitHub access.
 license: MIT
 metadata:
   summary: Turn an idea into a validated badge app for the emulator and physical hardware.
@@ -64,7 +64,10 @@ Then:
 1. Keep `update()` non-blocking and efficient; use `badge.ticks` or
    `badge.ticks_delta` for timing.
 2. Put initialization in `init()` and state/resource cleanup in `on_exit()` when needed.
-3. Use `/system/...` for deployed absolute paths and app-relative paths for app-owned assets.
+3. Use the shared app-directory pattern from
+   [references/app-contract.md](references/app-contract.md), then use relative
+   paths for app-owned assets. Do not use `os.path`; it is absent on the tested
+   badge MicroPython runtime.
 4. Use the 2026 runtime globals and modules present in the badge's MicroPython
    build. Do not add desktop Python dependencies to badge code.
 5. Prefer paletted PNGs, sprite sheets, on-demand loading, and bounded collections.
@@ -106,9 +109,10 @@ For a meaningful emulator iteration:
 
 ## Deploy to a physical badge
 
-For persistent deployment, put the badge into USB Disk Mode. For a transient
-hardware render test, prefer `mpremote mount badge`. Preview exactly what will
-be copied:
+For persistent deployment, put the badge into USB Disk Mode. The deploy tool
+supports both `BADGER/system/apps` and the upstream `TUFTY/apps` layout. For a
+transient hardware render test, prefer `mpremote mount badge`. Preview exactly
+what will be copied:
 
 ```bash
 python3 .github/skills/badge-app-builder/scripts/deploy_app.py Team1/<app-name>

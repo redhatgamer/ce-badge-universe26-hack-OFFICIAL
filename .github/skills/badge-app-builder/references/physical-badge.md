@@ -6,8 +6,8 @@ For the authoritative connection and serial workflow, read
 ## Persistent deployment
 
 1. Connect the badge with a data-capable USB-C cable.
-2. Enter USB mass-storage mode and wait for the `BADGER` volume.
-3. Confirm it contains `system/apps`.
+2. Enter USB mass-storage mode and wait for the `BADGER` or `TUFTY` volume.
+3. Confirm it contains `system/apps` or `apps`.
 4. Preview deployment with the repository deploy script.
 5. Write only after reviewing the file list.
 6. Safely eject, press RESET once, and launch the app.
@@ -18,7 +18,8 @@ python3 .github/skills/badge-app-builder/scripts/deploy_app.py badge/apps/my_app
 ```
 
 Use `--replace` only when replacing an existing app. The tool keeps a backup
-outside `system/apps` and never copies credentials, caches, or bytecode.
+outside the installed apps directory and never copies credentials, caches, or
+bytecode.
 
 ## Transient hardware testing
 

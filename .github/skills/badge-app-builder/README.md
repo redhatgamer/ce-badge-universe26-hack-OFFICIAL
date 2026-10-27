@@ -39,9 +39,14 @@ python3 .github/skills/badge-app-builder/scripts/deploy_app.py \
   Team1/my-app --write
 ```
 
-The deploy command is dry-run by default, validates for hardware first, copies
-only the selected app, excludes credentials and generated files, and requires
-`--replace` before replacing an installed app.
+The generated app uses one small directory lookup that supports the web/native
+simulator, temporary remote mounts, `BADGER/system/apps`, and `TUFTY/apps`.
+The validator rejects desktop-only `os.path` calls before they reach a badge.
+
+The deploy command is dry-run by default, detects either supported USB layout,
+validates for hardware first, copies only the selected app, excludes
+credentials and generated files, and requires `--replace` before replacing an
+installed app.
 
 ## Knowledge sources
 

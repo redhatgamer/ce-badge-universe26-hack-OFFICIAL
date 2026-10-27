@@ -21,19 +21,50 @@ The launcher supplies common globals such as `badge`, `screen`, `image`,
 constants, display-mode constants, and filesystem helpers.
 
 Use an explicit app directory when an app has local modules or relative
-assets. Prefer resolving it from `__file__` rather than hard-coding
-`/system/apps/<name>`: a hard-coded path only matches the deployed hardware
-location and breaks when the same app is loaded from a Campus Experts
-`TeamN/<name>` folder (for example, in the simulator).
+assets. The same source must work in the simulator, from a temporary remote
+mount, and after a manual copy to either supported badge filesystem layout.
+The tested Tufty MicroPython build does not provide desktop Python's
+`os.path`, so do not use `os.path.dirname(__file__)` or `os.path.join()`.
+Prefer the executing file's directory when `__file__` includes a path;
+otherwise preserve the launcher's current working directory (including `/`
+for web-editor runs). Only then try fixed locations, so a same-named built-in
+app cannot take precedence over the running app's modules and assets.
 
 ```python
 import os
 import sys
 
-APP_DIR = os.path.dirname(__file__) or "/system/apps/my_app"
+APP_DIR = os.getcwd()
+APP_FILE = globals().get("__file__", "")
+if "/" in APP_FILE:
+    APP_DIR = APP_FILE.rsplit("/", 1)[0] or "/"
+    if not APP_DIR.startswith("/"):
+        APP_DIR = os.getcwd().rstrip("/") + "/" + APP_DIR
+
+APP_DIRS = (
+    APP_DIR,
+    "/remote/apps/my_app",
+    "/system/apps/my_app",
+    "/apps/my_app",
+    "/my_app",
+    "/",
+)
+for app_dir in APP_DIRS:
+    try:
+        os.stat(app_dir)
+        APP_DIR = app_dir
+        break
+    except OSError:
+        pass
+
 os.chdir(APP_DIR)
 sys.path.insert(0, APP_DIR)
 ```
+
+After changing directory, load app-owned assets with relative paths such as
+`image.load("assets/player.png")`. Keep the path list short and use this shared
+pattern instead of adding simulator-only or badge-only branches throughout the
+app.
 
 The minimal lifecycle is:
 

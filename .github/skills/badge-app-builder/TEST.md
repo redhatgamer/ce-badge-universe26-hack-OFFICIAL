@@ -17,6 +17,9 @@ hardware checklist.
 - Uses the skill.
 - Inspects `hello`, `monapet`, and another relevant UI example.
 - Creates a path-safe app with `__init__.py`, `icon.png`, and optional assets.
+- Uses the shared app-directory lookup, avoids `os.path`, and loads app assets
+  with relative paths so the same source works in the simulator and on both
+  supported badge layouts.
 - Uses the 2026 `badge` API, logical controls, `State`, `run()`, and no desktop
   dependencies.
 - Runs the validator and points to the web simulator for a visual check.
@@ -73,7 +76,8 @@ hardware checklist.
 
 **Expected**
 
-- Confirms or detects USB Disk Mode through a `BADGER/system/apps` mount.
+- Confirms or detects USB Disk Mode through a `BADGER/system/apps` or
+  `TUFTY/apps` mount.
 - Runs hardware-target validation.
 - Runs deployment as a dry run first.
 - Copies only `my-app`, never `secrets.py`.
