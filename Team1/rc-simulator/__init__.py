@@ -145,10 +145,15 @@ KERBS = True             # red/white kerbs on corners
 SMALL_PART_FACES = 12    # faces kept per small non-wheel part (lights, spoilers)
 SHOW_FPS = False         # frames per second, top right
 
-# CPU cars at or beyond SPRITE_NEAR are drawn as pre-rendered sprites
-SPRITE_ANGLES = 32       # headings rendered
-SPRITE_NEAR = 1.5        # m; also the distance the sprites are rendered at
-SPRITE_VIEW = 3.5        # m; sprite camera elevation matches this distance
+# CPU cars are pre-rendered sprites, SPRITE_ANGLES headings per distance band.
+# Band: (used from distance m, render distance m, camera elevation of distance m)
+SPRITE_ANGLES = 32
+SPRITE_SETS = (
+    (0.0, 0.9, 0.9),
+    (1.1, 1.1, 1.32),
+    (1.7, 1.7, 2.04),
+    (3.0, 3.0, 3.6),
+)
 
 # Buttons: A B C along the bottom, UP/DOWN on the right side.
 # Prefer BUTTON_A/B/C; fall back to the logical names some firmware uses.
@@ -1132,33 +1137,21 @@ def draw_mesh(mesh, wheel, px, pz, r, dst, ox, oy, cam_h):
 # CPU car sprites
 # ---------------------------------------------------------------------------
 
-SPRITES = []         # one image per heading, all the same size
-SPRITE_AX = 0.0      # car origin's ground point in sprite pixels
-SPRITE_AY = 0.0
+SPRITE_BANDS = []    # (from distance, render distance, [(image, anchor x, anchor y)]), far first
 
 
-def build_sprites(mesh):
-    """Render mesh at SPRITE_ANGLES headings into same-size images."""
-    global SPRITES, SPRITE_AX, SPRITE_AY
-    SPRITES = []
-    if not mesh[0] or SPRITE_ANGLES < 1:
-        return
-    z_ref = SPRITE_NEAR
-    cam_h = CAM_H * SPRITE_NEAR / SPRITE_VIEW   # elevation angle as seen from SPRITE_VIEW
-    k_ref = FOCAL / z_ref
-    # shared size and anchor: project each part's bbox corners at every heading
-    boxes = []
-    for pvx, pvy, pvz, steer, verts, faces, pts, st in mesh[0]:
-        lo = [min(v[k] for v in verts) for k in range(3)]
-        hi = [max(v[k] for v in verts) for k in range(3)]
-        boxes.append((pvx, pvy, pvz, [(hi[0] if i & 1 else lo[0], hi[1] if i & 2 else lo[1],
-                                        hi[2] if i & 4 else lo[2]) for i in range(8)]))
-    x0 = y0 = 1e9
-    x1 = y1 = -1e9
+def _render_set(mesh, boxes, z_ref, view):
+    """SPRITE_ANGLES images of mesh at distance z_ref, camera elevation as
+    seen from `view`. Returns [(image, anchor x, anchor y)] per heading,
+    each image cropped to the projected bbox corners of its heading."""
+    cam_h = CAM_H * z_ref / view
+    out = []
     for b in range(SPRITE_ANGLES):
         r = TWO_PI * b / SPRITE_ANGLES
         cr = math.cos(r)
         sr = math.sin(r)
+        x0 = y0 = 1e9
+        x1 = y1 = -1e9
         for pvx, pvy, pvz, corners in boxes:
             bx = pvx * cr + pvz * sr
             bz = z_ref - pvx * sr + pvz * cr
@@ -1171,32 +1164,60 @@ def build_sprites(mesh):
                 x1 = max(x1, sx)
                 y0 = min(y0, sy)
                 y1 = max(y1, sy)
-    ox = math.ceil(-x0) + 1
-    oy = math.ceil(-y0) + 1
-    w = int(math.ceil(x1 - x0)) + 3
-    h = int(math.ceil(y1 - y0)) + 3
-    for b in range(SPRITE_ANGLES):
-        img = image(w, h)
+        ox = math.ceil(-x0) + 1
+        oy = math.ceil(-y0) + 1
+        img = image(int(math.ceil(x1 - x0)) + 3, int(math.ceil(y1 - y0)) + 3)
         try:
             img.antialias = image.X2
         except (AttributeError, TypeError):
             pass
-        draw_mesh(mesh, 0.0, 0.0, z_ref, TWO_PI * b / SPRITE_ANGLES, img, ox, oy, cam_h)
-        SPRITES.append(img)
-    SPRITE_AX = ox
-    SPRITE_AY = oy + cam_h * k_ref
-    gc.collect()
+        draw_mesh(mesh, 0.0, 0.0, z_ref, r, img, ox, oy, cam_h)
+        out.append((img, ox, oy + cam_h * FOCAL / z_ref))
+    return out
+
+
+def build_sprites(mesh):
+    """Render every SPRITE_SETS band."""
+    global SPRITE_BANDS
+    SPRITE_BANDS = []
+    if not mesh[0] or SPRITE_ANGLES < 1:
+        return
+    boxes = []
+    for pvx, pvy, pvz, steer, verts, faces, pts, st in mesh[0]:
+        lo = [min(v[k] for v in verts) for k in range(3)]
+        hi = [max(v[k] for v in verts) for k in range(3)]
+        boxes.append((pvx, pvy, pvz, [(hi[0] if i & 1 else lo[0], hi[1] if i & 2 else lo[1],
+                                        hi[2] if i & 4 else lo[2]) for i in range(8)]))
+    size = 0
+    for d0, z_ref, view in SPRITE_SETS:
+        imgs = _render_set(mesh, boxes, z_ref, view)
+        SPRITE_BANDS.append((d0, z_ref, imgs))
+        size += sum(e[0].width * e[0].height * 4 for e in imgs)
+        gc.collect()
+    SPRITE_BANDS.sort(key=lambda e: e[0], reverse=True)
+    try:
+        free = gc.mem_free()
+    except AttributeError:
+        free = -1
+    print("rotor: sprites %d KB, heap free %d KB" % (size // 1024, free // 1024))
 
 
 def draw_sprite(X, Z, r):
-    """Blit the sprite for yaw r relative to the view ray, scaled for Z,
-    anchored at the car's ground point."""
+    """Blit the sprite for yaw r relative to the view ray from the band for
+    the car's distance. Scaled z_ref / Z, plus 1 / cos(view angle)
+    horizontally for off-axis perspective; anchored at the ground point."""
+    d = math.sqrt(X * X + Z * Z)
+    for band in SPRITE_BANDS:
+        if d >= band[0]:
+            break
     a = (r - math.atan2(X, Z)) % TWO_PI
-    img = SPRITES[int(a * (SPRITE_ANGLES / TWO_PI) + 0.5) % SPRITE_ANGLES]
-    sc = SPRITE_NEAR / Z
+    img, ax, ay = band[2][int(a * (SPRITE_ANGLES / TWO_PI) + 0.5) % SPRITE_ANGLES]
+    z_ref = band[1]
+    sy = z_ref / Z
+    sx = sy * d / Z
     k = FOCAL / Z
-    screen.blit(img, rect(CX + X * k - SPRITE_AX * sc, HY + CAM_H * k - SPRITE_AY * sc,
-                          img.width * sc, img.height * sc))
+    screen.blit(img, rect(CX + X * k - ax * sx, HY + CAM_H * k - ay * sy,
+                          img.width * sx, img.height * sy))
 
 
 # ---------------------------------------------------------------------------
@@ -1541,7 +1562,7 @@ def draw_world(camx, camz, cyaw):
         r = car.yaw - cyaw
         screen.antialias = image.OFF
         draw_shadow(X, Z, math.cos(r), math.sin(r))
-        if car.cpu and SPRITES and Z >= SPRITE_NEAR:
+        if car.cpu and SPRITE_BANDS:
             draw_sprite(X, Z, r)
         else:
             screen.antialias = image.X2
