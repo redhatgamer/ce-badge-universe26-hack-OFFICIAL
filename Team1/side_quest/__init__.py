@@ -33,15 +33,18 @@ QUEST_COUNT = len(DAY_QUESTS[0])
 TEXT = color.rgb(245, 243, 229)
 MUTED = color.rgb(153, 165, 157)
 LIME = color.rgb(211, 250, 55)
-PHONE_BG = color.rgb(33, 84, 160)
-PHONE_LATTICE = color.rgb(43, 98, 176)
-STATUS_BG = color.rgb(8, 10, 16)
-DOCK_BG = color.rgb(14, 24, 44)
-CARD = color.rgb(10, 22, 46)
-HEADER_INK = color.rgb(14, 34, 64)
-TODO_PEN = color.rgb(150, 180, 220)
-HEADER_TOP = (160, 198, 234)
-HEADER_BOTTOM = (98, 142, 198)
+PHONE_BG = color.rgb(16, 4, 30)
+PHONE_LATTICE = color.rgb(40, 14, 68)
+STATUS_BG = color.rgb(8, 2, 16)
+DOCK_BG = color.rgb(10, 2, 20)
+CARD = color.rgb(36, 5, 58)
+HEADER_INK = color.rgb(36, 5, 58)
+HEADER_TEXT = color.rgb(255, 236, 255)
+TODO_PEN = color.rgb(214, 160, 240)
+NEON_PINK = color.rgb(255, 82, 170)
+NEON_CYAN = color.rgb(64, 220, 230)
+HEADER_TOP = (132, 36, 168)
+HEADER_BOTTOM = (72, 12, 112)
 ICON_COLORS = (
     color.rgb(238, 126, 62),
     color.rgb(82, 190, 92),
@@ -91,14 +94,9 @@ BIG_GLYPHS = {
 }
 # Per day: big gradient glyphs, then stacked title lines.
 POSTERS = (
-    None,
+    ("", ("DAY ONE", "COMPLETED")),
     ("26", ("GITHUB", "UNIVERSE")),
 )
-DISC_DAY = 0
-DISC_SIZE = 200
-DISC_RPM_DEG_PER_MS = 0.015
-HIRES_W = 320
-HIRES_H = 240
 PIXEL_FONT = {
     "A": ("01110", "10001", "10001", "11111", "10001", "10001", "10001"),
     "B": ("11110", "10001", "10001", "11110", "10001", "10001", "11110"),
@@ -133,8 +131,14 @@ except NameError:
     PREV_BUTTON = BUTTON_A
     NEXT_BUTTON = BUTTON_C
     LOG_BUTTON = BUTTON_B
+SKIP_BUTTONS = (PREV_BUTTON, NEXT_BUTTON, LOG_BUTTON, BUTTON_UP, BUTTON_DOWN)
 
 STAR_ANIM_MS = 700
+STREAK_MILESTONES = (3, 5, 8, 12, 16)
+STREAK_FLASH_MS = 1400
+FLAME_ROWS = ("00100", "01100", "01110", "11111", "11111", "11111", "01110")
+FLAME_OUTER = color.rgb(255, 128, 32)
+FLAME_CORE = color.rgb(255, 224, 96)
 INTRO_WIPE_MS = 500
 INTRO_SKIP_MS = 700
 FINALE_LOCK_MS = 1200
@@ -144,17 +148,27 @@ GRID_ROWS = 12
 LOGICAL_W = 160
 LOGICAL_H = 120
 
-state = {"days": [[] for _ in DAY_QUESTS], "day": 0}
+state = {"days": [[] for _ in DAY_QUESTS], "day": 0, "streak": 0}
 selected = 0
 star_anim = None
+streak_flash = None
 finale_start = None
 posters = [None] * len(POSTERS)
-disc_img = None
-disc_brush = None
-disc_shape = None
 current_hires = False
 phone_bg = None
 grid_bg = None
+mona_sheet = None
+MONA_DAY = 0
+MONA_COLS = 8
+MONA_ROWS = 6
+MONA_COUNT = MONA_COLS * MONA_ROWS
+MONA_W = 72
+MONA_H = 64
+MONA_TOP = 2
+MONA_SHOW = 0.85
+CAPTION_Y = 62
+HINT_H = 14
+MONA_TURN_MS = 3000
 intro_art = None
 intro_start = None
 intro_done = False
@@ -165,6 +179,13 @@ screen.font = font.sins
 
 def current_done():
     return state["days"][state["day"]]
+
+
+def any_pressed():
+    for button in SKIP_BUTTONS:
+        if badge.pressed(button):
+            return True
+    return False
 
 
 def green(level, alpha=255):
@@ -242,32 +263,40 @@ def draw_text(target, text, center_x, y, unit, pen, grow=0, gradient=False):
 def build_poster(day):
     width = LOGICAL_W
     height = LOGICAL_H
-    if day == DISC_DAY:
-        art = image(HIRES_W, HIRES_H)
-        art.pen = POSTER_BG
-        art.clear()
-        posters[day] = art
-        return
-
     glyphs, lines = POSTERS[day]
     art = image(width, height)
     art.pen = POSTER_BG
     art.clear()
 
+    text_unit = max(1, width // 53)
+    ink = max(1, text_unit // 2 + 1)
+    gap = text_unit + 1
+
+    if not glyphs:
+        # Caption under the spinning head: a big first line, a smaller second.
+        y = CAPTION_Y
+        for line_index, line in enumerate(lines):
+            unit = text_unit if line_index == 0 else max(1, text_unit - 1)
+            line_ink = max(1, unit // 2 + 1)
+            draw_text(art, line, width // 2, y, unit, POSTER_PINK, line_ink + 1)
+            draw_text(art, line, width // 2, y, unit, POSTER_INK, line_ink)
+            draw_text(art, line, width // 2, y, unit, TEXT)
+            y += 7 * unit + gap + 1
+        posters[day] = art
+        return
+
     edge = max(2, width // 50)
+    area = height - HINT_H - 1
     cols = 7 * len(glyphs) - 1
-    unit = min(width // 13, (height - 4 * edge) // 10)
+    unit = min(width // 13, (area - 4 * edge) // 10)
     glyphs_x = (width - cols * unit) // 2
-    glyphs_y = (height - 10 * unit) // 2
+    glyphs_y = (area - 10 * unit) // 2
     for index, glyph in enumerate(glyphs):
         draw_bitmap(art, BIG_GLYPHS[glyph], glyphs_x + 7 * unit * index, glyphs_y, unit, POSTER_EDGE, edge)
     for index, glyph in enumerate(glyphs):
         draw_bitmap(art, BIG_GLYPHS[glyph], glyphs_x + 7 * unit * index, glyphs_y, unit, None, 0, 10 * unit)
 
-    text_unit = max(1, width // 53)
-    ink = max(1, text_unit // 2 + 1)
-    gap = text_unit + 1
-    text_y = (height - (len(lines) * 7 * text_unit + (len(lines) - 1) * gap)) // 2
+    text_y = (area - (len(lines) * 7 * text_unit + (len(lines) - 1) * gap)) // 2
     for line_index, line in enumerate(lines):
         y = text_y + line_index * (7 * text_unit + gap)
         draw_text(art, line, width // 2, y, text_unit, POSTER_PINK, ink + 1)
@@ -301,6 +330,9 @@ def find_asset(name):
         path = folder + "/assets/" + name
         if folder and file_exists(path):
             return path
+    # The web simulator keeps uploaded assets next to __init__.py at its root.
+    if file_exists("/" + name):
+        return "/" + name
     return None
 
 
@@ -319,7 +351,7 @@ def build_intro():
     intro_art = image(width, height)
     intro_art.pen = POSTER_BG
     intro_art.clear()
-    draw_text(intro_art, "UNIVERSE", width // 2, height // 2 - 8 * unit, unit, TEXT)
+    draw_text(intro_art, "VIBE", width // 2, height // 2 - 8 * unit, unit, TEXT)
     draw_text(intro_art, "CITY", width // 2, height // 2 + 2 * unit, unit, TEXT)
 
 
@@ -343,11 +375,12 @@ def draw_intro():
         if (elapsed - INTRO_WIPE_MS) // 500 % 2 == 0:
             k = max(1, width // 160)
             hint = "PRESS ANY BUTTON"
-            hint_width, _ = screen.measure_text(hint)
+            hint_width, hint_height = screen.measure_text(hint)
+            hint_y = height - hint_height - 4 * k
             screen.pen = POSTER_BG
-            screen.rectangle(0, height - 13 * k, width, 13 * k)
+            screen.rectangle(0, hint_y - k, width, height - hint_y + k)
             screen.pen = TEXT
-            screen.text(hint, (width - hint_width) / 2, height - 12 * k)
+            screen.text(hint, (width - hint_width) / 2, hint_y)
 
     glow = 0.5 + 0.5 * math.sin(elapsed / 220)
     set_caselights(glow, 1 - glow, 1 - glow, glow)
@@ -370,18 +403,25 @@ def init():
     ]
     if state.get("day") not in range(len(DAY_QUESTS)):
         state["day"] = 0
+    streak = state.get("streak")
+    state["streak"] = streak if isinstance(streak, int) and streak > 0 else 0
 
 
 def toggle_completion():
-    global star_anim, finale_start
+    global star_anim, finale_start, streak_flash
 
     done = current_done()
     if selected in done:
         done.remove(selected)
         star_anim = None
+        state["streak"] = 0
+        streak_flash = None
     else:
         done.append(selected)
         star_anim = (selected, badge.ticks)
+        state["streak"] += 1
+        if state["streak"] in STREAK_MILESTONES:
+            streak_flash = badge.ticks
         if len(done) == QUEST_COUNT:
             finale_start = badge.ticks
     State.save(STATE_KEY, state)
@@ -468,54 +508,46 @@ def draw_grid(width, elapsed):
                 screen.rectangle(int(col * cell) + 1, int(row * cell) + 1, size, size)
 
 
-def build_disc():
-    # disc.png is an original neon coastal-city design for the finale.
-    global disc_img, disc_brush, disc_shape
-
-    path = find_asset("disc.png")
-    if not path:
-        disc_img = False
-        return
-    disc_img = image.load(path)
-    disc_brush = brush.image(disc_img)
-    disc_shape = shape.circle(DISC_SIZE / 2, DISC_SIZE / 2, DISC_SIZE / 2 - 1)
-
-
-def draw_disc(width, height, since):
-    pop = min(1, since / 350)
-    scale = 1 - (1 - pop) * (1 - pop) * (1 - pop)
-    radius = DISC_SIZE / 2
-    cx = width // 2
-    cy = height // 2 - 8
-
-    screen.pen = color.rgb(0, 0, 0, 110)
-    screen.shape(shape.circle(cx + 4, cy + 6, (radius - 1) * scale))
-
-    disc_shape.transform = (
-        mat3().translate(cx, cy).scale(scale).rotate(since * DISC_RPM_DEG_PER_MS).translate(-radius, -radius)
-    )
-    screen.pen = disc_brush
-    screen.shape(disc_shape)
-
-    screen.pen = POSTER_BG
-    screen.shape(shape.circle(cx, cy, 12.4 * scale))
-    screen.pen = color.rgb(120, 122, 130)
-    screen.shape(shape.circle(cx, cy, 12.4 * scale).stroke(1.5))
-
-
 def prebuild_assets():
     # One asset per frame keeps each hitch short; runs while the intro waits.
     if phone_bg is None:
         build_phone_bg()
     elif grid_bg is None:
         build_grid_bg()
-    elif disc_img is None:
-        build_disc()
+    elif mona_sheet is None:
+        build_mona()
     else:
         for day in range(len(POSTERS)):
             if posters[day] is None:
                 build_poster(day)
                 return
+
+
+def build_mona():
+    global mona_sheet
+
+    path = find_asset("mona_turn.png")
+    mona_sheet = image.load(path).spritesheet(MONA_COLS, MONA_ROWS) if path else False
+
+
+def draw_mona(width, height, since):
+    k = max(1, width // LOGICAL_W)
+    pop = min(1, since / 350)
+    scale = 1 - (1 - pop) * (1 - pop) * (1 - pop)
+    frame = int(since % MONA_TURN_MS * MONA_COUNT / MONA_TURN_MS) % MONA_COUNT
+    bob = math.sin(since / 450) * 2 * k
+    show = MONA_SHOW * k
+    cx = width / 2
+    cy = MONA_TOP * k + MONA_H * show / 2 + bob
+
+    pulse = 0.5 + 0.5 * math.sin(since / 500)
+    for index, radius in enumerate((33, 27, 21)):
+        screen.pen = color.rgb(255, 110, 200, 22 + index * 8 + int(pulse * 10))
+        screen.shape(shape.circle(cx, cy, (radius + pulse * 3) * show * scale))
+
+    w = MONA_W * show * scale
+    h = MONA_H * show * scale
+    screen.blit(mona_sheet.sprite(frame % MONA_COLS, frame // MONA_COLS), rect(cx - w / 2, cy - h / 2, w, h))
 
 
 def draw_finale():
@@ -527,26 +559,24 @@ def draw_finale():
     day = state["day"]
     if posters[day] is None:
         build_poster(day)
-    if day == DISC_DAY and disc_img is None:
-        build_disc()
-
+    if day == MONA_DAY and mona_sheet is None:
+        build_mona()
     reveal = min(1, max(0, (elapsed - MERGE_AT_MS) / 300))
-    disc_scene = day == DISC_DAY and reveal >= 1 and bool(disc_img)
-    set_resolution(disc_scene)
+    set_resolution(False)
     width = screen.width
     height = screen.height
     k = max(1, width // LOGICAL_W)
 
     if reveal >= 1:
         screen.blit(posters[day], rect(0, 0, width, height))
-        if day != DISC_DAY:
-            sweep_x = int((elapsed - MERGE_AT_MS) % 2400 / 2400 * (width + 40)) - 40
-            screen.pen = color.rgb(255, 255, 255, 40)
-            screen.rectangle(sweep_x, 0, 12 * k, height)
-        if disc_scene:
-            draw_disc(width, height, elapsed - MERGE_AT_MS - 300)
+        sweep_x = int((elapsed - MERGE_AT_MS) % 2400 / 2400 * (width + 40)) - 40
+        screen.pen = color.rgb(255, 255, 255, 40)
+        screen.rectangle(sweep_x, 0, 12 * k, height)
 
-        if day != DISC_DAY:
+        if day == MONA_DAY:
+            if mona_sheet:
+                draw_mona(width, height, elapsed - MERGE_AT_MS - 300)
+        else:
             footer = "DAY {} SHIPPED".format(state["day"] + 1)
             footer_width, _ = screen.measure_text(footer)
             screen.pen = TEXT
@@ -560,11 +590,12 @@ def draw_finale():
 
     if elapsed > FINALE_LOCK_MS + 800:
         hint = "PRESS ANY BUTTON"
-        hint_width, _ = screen.measure_text(hint)
+        hint_width, hint_height = screen.measure_text(hint)
+        hint_y = height - hint_height - 4 * k
         screen.pen = POSTER_BG
-        screen.rectangle(0, height - 14 * k, width, 14 * k)
+        screen.rectangle(0, min(hint_y - k, height - HINT_H * k), width, height)
         screen.pen = MUTED
-        screen.text(hint, (width - hint_width) / 2, height - 9 * k)
+        screen.text(hint, (width - hint_width) / 2, hint_y)
 
 
 def build_phone_bg():
@@ -593,8 +624,15 @@ def build_phone_bg():
         )
         phone_bg.rectangle(0, 11 * k + row, width, 1)
 
+    phone_bg.pen = NEON_PINK
+    phone_bg.rectangle(0, 22 * k, width, k)
+    phone_bg.pen = NEON_CYAN
+    phone_bg.rectangle(0, 23 * k, width, k)
+
     phone_bg.pen = DOCK_BG
     phone_bg.rectangle(0, 107 * k, width, height - 107 * k)
+    phone_bg.pen = NEON_PINK
+    phone_bg.rectangle(0, 107 * k, width, k)
 
     for quest_id in range(QUEST_COUNT):
         paint_icon(phone_bg, quest_id, k)
@@ -624,11 +662,25 @@ def draw_check(cx, cy, k):
     screen.line(cx - k, cy + 2 * k, cx + 2 * k, cy - 2 * k)
 
 
+def draw_flame(x, y, k):
+    for row, cells in enumerate(FLAME_ROWS):
+        for col, cell in enumerate(cells):
+            if cell == "1":
+                core = row >= 4 and 1 <= col <= 3
+                screen.pen = FLAME_CORE if core else FLAME_OUTER
+                screen.rectangle(x + col * k, y + row * k, k, k)
+
+
 def draw_status_bar(width, k, done_count):
     screen.pen = TEXT
     for index in range(4):
         bar_h = (2 + index * 2) * k
         screen.rectangle((4 + index * 3) * k, 9 * k - bar_h, 2 * k, bar_h)
+
+    if state["streak"] > 0:
+        draw_flame(19 * k, 2 * k, k)
+        screen.pen = TEXT
+        screen.text(str(state["streak"]), 26 * k, 0)
 
     label = "DAY {}".format(state["day"] + 1)
     label_width, _ = screen.measure_text(label)
@@ -651,7 +703,7 @@ def draw_icons(k, done):
 
         if quest_id == selected:
             glow = int(190 + 65 * math.sin(badge.ticks / 180))
-            screen.pen = color.rgb(255, 255, 255, glow)
+            screen.pen = color.rgb(255, 82, 170, glow)
             screen.shape(
                 shape.rounded_rectangle(x - 2 * k, y - 2 * k, size + 4 * k, size + 4 * k, 7 * k).stroke(2)
             )
@@ -662,6 +714,8 @@ def draw_icons(k, done):
 
 
 def draw():
+    global streak_flash
+
     width = screen.width
     height = screen.height
     k = max(1, width // 160)
@@ -675,19 +729,32 @@ def draw():
 
     draw_status_bar(width, k, len(done))
 
-    screen.pen = HEADER_INK
-    heading = "Side Quest"
-    heading_width, _ = screen.measure_text(heading)
-    screen.text(heading, (width - heading_width) / 2, 12 * k)
+    heading = "Vibe City"
+    if streak_flash is not None:
+        flash_elapsed = badge.ticks - streak_flash
+        if flash_elapsed < STREAK_FLASH_MS:
+            heading = "{} STREAK!".format(state["streak"])
+            pulse = 0.5 + 0.5 * math.sin(flash_elapsed / 90)
+            set_caselights(pulse, 1 - pulse, 1 - pulse, pulse)
+        else:
+            streak_flash = None
+            set_caselights(0)
+
+    screen.pen = HEADER_TEXT
+    heading_width, heading_height = screen.measure_text(heading)
+    header_y = 11 * k + (11 * k - heading_height) // 2
+    screen.text(heading, (width - heading_width) // 2, header_y)
     counter = "{}/{}".format(len(done), QUEST_COUNT)
     counter_width, _ = screen.measure_text(counter)
-    screen.text(counter, width - counter_width - 5 * k, 12 * k)
-    screen.text("UP/DN", 5 * k, 12 * k)
+    screen.text(counter, width - counter_width - 5 * k, header_y)
+    screen.text("UP/DN", 5 * k, header_y)
 
     draw_icons(k, done)
 
     screen.pen = CARD
     screen.shape(shape.rounded_rectangle(6 * k, 72 * k, width - 12 * k, 34 * k, 4 * k))
+    screen.pen = NEON_PINK
+    screen.shape(shape.rounded_rectangle(6 * k, 72 * k, width - 12 * k, 34 * k, 4 * k).stroke(1))
     screen.pen = LIME
     screen.text(title, 10 * k, 73 * k)
     badge_text = "DONE" if completed else "TO DO"
@@ -739,7 +806,7 @@ def update():
             intro_start = badge.ticks
         draw_intro()
         elapsed = badge.ticks - intro_start
-        if elapsed > INTRO_SKIP_MS and badge.pressed():
+        if elapsed > INTRO_SKIP_MS and any_pressed():
             intro_done = True
             intro_art = None
             set_resolution(False)
@@ -750,7 +817,7 @@ def update():
 
     if finale_start is not None:
         draw_finale()
-        if badge.ticks - finale_start > FINALE_LOCK_MS and badge.pressed():
+        if badge.ticks - finale_start > FINALE_LOCK_MS and any_pressed():
             finale_start = None
             follow_open = state["day"] == len(DAY_QUESTS) - 1
             set_resolution(follow_open)
@@ -759,7 +826,7 @@ def update():
 
     if follow_open:
         draw_follow()
-        if badge.pressed():
+        if any_pressed():
             follow_open = False
             follow_art = None
             set_resolution(False)
