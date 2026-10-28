@@ -5,7 +5,8 @@ import math
 from badgeware import State
 
 
-STATE_KEY = "team1_side_quest"
+STATE_KEY = "team1_vibe_city"
+LEGACY_STATE_KEY = "team1_side_quest"
 DAY_QUESTS = (
     (
         ("Meet a maker", "Ask someone what", "they're building."),
@@ -322,9 +323,9 @@ def find_asset(name):
     here = globals().get("__file__", "")
     folders = (
         here.rsplit("/", 1)[0] if "/" in here else "",
-        "/system/apps/side_quest",
-        "/apps/side_quest",
-        "/remote/side_quest",
+        "/system/apps/vibe_city",
+        "/apps/vibe_city",
+        "/remote/vibe_city",
     )
     for folder in folders:
         path = folder + "/assets/" + name
@@ -388,6 +389,9 @@ def draw_intro():
 
 def init():
     State.load(STATE_KEY, state)
+    if not any(state["days"]) and state["streak"] == 0:
+        # Carry over progress saved under the old Side Quest name.
+        State.load(LEGACY_STATE_KEY, state)
     days = state.get("days")
     if not isinstance(days, list) or len(days) != len(DAY_QUESTS):
         days = [[] for _ in DAY_QUESTS]

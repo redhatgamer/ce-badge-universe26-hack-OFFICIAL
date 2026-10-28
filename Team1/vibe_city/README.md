@@ -1,7 +1,7 @@
-# Side Quest
+# Vibe City
 
 An offline conference game for the GitHub Universe 2026 badge. Each day has
-eight social "side quests" (meet a maker, trade a tip, ...). Log them as you
+eight social quests (meet a maker, trade a tip, ...). Log them as you
 complete them, build a streak, and unlock a celebration when you finish a day.
 It needs no Wi-Fi or accounts, and progress is saved on the badge.
 
@@ -50,8 +50,9 @@ them there. HOME belongs to the launcher and is not used by the app.
 
 ## What is saved and what is not
 
-Saved under the state key `team1_side_quest` every time you log, undo or switch
-day:
+Saved under the state key `team1_vibe_city` every time you log, undo or switch
+day. Progress saved under the earlier name (`team1_side_quest`) is loaded once
+if no Vibe City progress exists yet:
 
 - The checked quests for each day.
 - The day you were last on.
@@ -139,8 +140,8 @@ Every asset has a fallback, so the app still runs if one is missing.
 ## Checks and deployment
 
 ```bash
-python3 .github/skills/badge-app-builder/scripts/validate_app.py Team1/side_quest
-python3 .github/skills/badge-app-builder/scripts/deploy_app.py Team1/side_quest \
+python3 .github/skills/badge-app-builder/scripts/validate_app.py Team1/vibe_city
+python3 .github/skills/badge-app-builder/scripts/deploy_app.py Team1/vibe_city \
   --mount /Volumes/BADGER --replace --write
 ```
 
